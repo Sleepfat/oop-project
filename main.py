@@ -1,16 +1,34 @@
-from fastapi import FastAPI, HTTPException
-from datetime import date, time
-from typing import List, Dict
+from fastapi import FastAPI
+from typing import List
+from datetime import date
 
-app = FastAPI()
 
-class Table:
-    def __init__(self, table_id: int, capacity: int, price: float):
-        self.table_id = table_id
+# ---------- Base Class ----------
+class Space:
+    def __init__(self, space_id: int, capacity: int, price: float):
+        self.space_id = space_id
         self.capacity = capacity
         self.price = price
 
-class Place:
+
+class Table(Space):
+    pass
+
+
+class Room(Space):
+    pass
+
+
+# ---------- Reservation ----------
+class Reservation:
+    def __init__(self, user: str, space: Space, reserve_date: date):
+        self.user = user
+        self.space = space
+        self.reserve_date = reserve_date
+
+
+# ---------- Bar ----------
+class Bar:
     def __init__(self):
         self.tables = [
             Table(1, 2, 500),
@@ -18,121 +36,78 @@ class Place:
             Table(3, 6, 1500)
         ]
 
-    def checkAvailability(self, guests: int) -> List[Table]:
-        return [t for t in self.tables if t.capacity >= guests]
-
-class Cart:
-    def __init__(self):
-        self.carts: Dict[int, dict] = {} 
-
-    def previewCost(self, user_id: int, table: Table):
-        total = table.price
-
-        cost_info = {
-            "table_id": table.table_id,
-            "table_price": table.price,
-            "total_price": total
-        }
-
-        self.carts[user_id] = cost_info
-        return cost_info
-
-    def getCart(self, user_id: int):
-        return self.carts.get(user_id)
-
-    def clearCart(self, user_id: int):
-        if user_id in self.carts:
-            del self.carts[user_id]
-
-class RoomReservation:
-    def __init__(self):
-        self.reservations = []
-
-    def isTableBooked(self, table_id: int, reserve_date: date, reserve_time: time) -> bool:
-        return any(
-            r for r in self.reservations
-            if r["table_id"] == table_id
-            and r["date"] == reserve_date
-            and r["time"] == reserve_time
-        )
-
-    def createReservation(self, user_id: int, table_id: int, reserve_date: date, reserve_time: time, cost_info: dict):
-        reservation = {
-            "reservation_id": len(self.reservations) + 1,
-            "customer_id": user_id,
-            "table_id": table_id,
-            "date": reserve_date,
-            "time": reserve_time,
-            "cost": cost_info
-        }
-        self.reservations.append(reservation)
-        return reservation
-
-class Bar:
-    def __init__(self):
-        self.place = Place()
-        self.room_reservation = RoomReservation()
-        self.cart = Cart()
-
-    def searchTable(self, guests: int, reserve_date: date, reserve_time: time):
-        suitable_tables = self.place.checkAvailability(guests)
-        return [
-            t for t in suitable_tables
-            if not self.room_reservation.isTableBooked(t.table_id, reserve_date, reserve_time)
+        self.rooms = [
+            Room(101, 10, 5000),
+            Room(102, 10, 5000),
+            Room(103, 10, 5000),
         ]
 
-    def previewReservationCost(self, user_id: int, table_id: int):
-        table = next((t for t in self.place.tables if t.table_id == table_id), None)
-        if not table:
-            raise HTTPException(status_code=404, detail="Table not found")
-        return self.cart.previewCost(user_id, table)
+        self.reservations: List[Reservation] = []
 
-    def reserveTable(self, user_id: int, table_id: int, reserve_date: date, reserve_time: time):
-        if self.room_reservation.isTableBooked(table_id, reserve_date, reserve_time):
-            raise HTTPException(status_code=400, detail="Table already booked")
+    # ---------- Check Availability ----------
+    def check_availability(self, space: Space, reserve_date: date):
+        for r in self.reservations:
+            if r.space.space_id == space.space_id and r.reserve_date == reserve_date:
+                return False
+        return True
 
-        cost_info = self.cart.getCart(user_id)
-        if not cost_info:
-            raise HTTPException(status_code=400, detail="Cart is empty. Preview cost first.")
+    # ---------- Search ----------
+    def search_tables(self, reserve_date: date, guests: int):
+        return [
+            table for table in self.tables
+            if table.capacity >= guests and self.check_availability(table, reserve_date)
+        ]
 
-        reservation = self.room_reservation.createReservation(
-            user_id, table_id, reserve_date, reserve_time, cost_info
-        )
+    def search_rooms(self, reserve_date: date, guests: int):
+        return [
+            room for room in self.rooms
+            if room.capacity >= guests and self.check_availability(room, reserve_date)
+        ]
 
-        self.cart.clearCart(user_id)
-        return reservation
+    # ---------- Create Reservation ----------
+    def create_reservation(self, user: str, space_id: int, reserve_date: date):
+        all_spaces = self.tables + self.rooms
+
+        for space in all_spaces:
+            if space.space_id == space_id:
+                if self.check_availability(space, reserve_date):
+                    reservation = Reservation(user, space, reserve_date)
+                    self.reservations.append(reservation)
+                    return reservation
+        return None
 
 
+# ------------------ FASTAPI ------------------
+
+app = FastAPI()
 bar = Bar()
 
+
 @app.get("/tables/search")
-def search_table(guests: int, date: date, time: time):
-    available = bar.searchTable(guests, date, time)
+def search_tables(guests: int, reserve_date: date):
+    available = bar.search_tables(reserve_date, guests)
     return {
         "available_tables": [
-            {"table_id": t.table_id, "capacity": t.capacity, "price": t.price}
+            {"id": t.space_id, "capacity": t.capacity, "price": t.price}
             for t in available
         ]
     }
 
-@app.post("/cart/preview")
-def preview_cart(user_id: int, table_id: int):
-    cost = bar.previewReservationCost(user_id, table_id)
-    return {"cart_preview": cost}
 
-@app.get("/cart")
-def get_cart(user_id: int):
-    cart = bar.cart.getCart(user_id)
-    if not cart:
-        return {"message": "Cart is empty"}
-    return {"cart": cart}
-
-@app.post("/tables/reserve")
-def reserve_table(user_id: int, table_id: int, date: date, time: time):
-    reservation = bar.reserveTable(user_id, table_id, date, time)
-    return {"message": "Reservation successful", "data": reservation}
+@app.get("/rooms/search")
+def search_rooms(guests: int, reserve_date: date):
+    available = bar.search_rooms(reserve_date, guests)
+    return {
+        "available_rooms": [
+            {"id": r.space_id, "capacity": r.capacity, "price": r.price}
+            for r in available
+        ]
+    }
 
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+@app.post("/reservation")
+def reserve(user: str, space_id: int, reserve_date: date):
+    reservation = bar.create_reservation(user, space_id, reserve_date)
+    if reservation:
+        return {"message": "Reservation successful"}
+    return {"message": "Space not available"}
